@@ -9,7 +9,6 @@ The Recipe Recommender is an intelligent, semantic-based recipe recommendation s
 - **Semantic Understanding**: Uses advanced language models to interpret user queries and preferences.
 - **Personalized Recommendations**: Suggests recipes tailored to individual tastes and dietary needs.
 - **Ingredient Matching**: Recommends recipes based on available ingredients in the user's kitchen.
-- **Interactive Interface**: Provides a conversational interface for users to interact with the recommender system.
 
 ## Technologies Used
 - **Python**: Core programming language for the project.
