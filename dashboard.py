@@ -13,7 +13,7 @@ recipes = pd.read_csv("output_data/common_ingredients_recipes.csv")
 
 #Instantiate the text splitter
 raw_documents = TextLoader("output_data/recipe_description.txt").load()
-text_splitter = CharacterTextSplitter(chunk_size=0, chunk_overlap=0, separator="\n")
+text_splitter = CharacterTextSplitter(chunk_overlap=0, separator="\n")
 documents = text_splitter.split_documents(raw_documents)
 
 
@@ -58,6 +58,12 @@ if query:
     st.write(f"Top recipe for query: '{query}'")
     top_recipe = retrieve_top_recipe(query)
 
+    # Clean and format the ingredients list
+    ingredients_list = [
+        ingredient.strip().replace("[", "").replace("]", "").replace("'", "")
+        for ingredient in top_recipe['ingredients'].split(",")
+    ]
+
     # Style the recipe like a cooking recipe
     st.markdown(f"""
     <div style="background-color: black; padding: 20px; border-radius: 10px; border: 1px solid #ddd;">
@@ -66,7 +72,7 @@ if query:
         <hr style="border: 1px solid #ddd;">
         <p><strong>Ingredients:</strong></p>
         <ul>
-            {"".join([f"<li>{ingredient.strip().replace('[', '').replace(']', '')}</li>" for ingredient in top_recipe['ingredients'].split(",")])}
+            {"".join([f"<li>{ingredient}</li>" for ingredient in ingredients_list])}
         </ul>
         <p><strong>Instructions:</strong></p>
         <p>{top_recipe['description']}</p>
