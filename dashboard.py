@@ -1,4 +1,4 @@
-import streamlit as st # [Top Start] streamlit run dashboard.py
+import streamlit as st # [To Start] streamlit run dashboard.py
 import pandas as pd
 from phoenix.otel import register
 from langchain_community.document_loaders import TextLoader # Importing a custom text loader for the recipe description
@@ -68,7 +68,7 @@ def verify_recipe(recipe: str, query: str) -> str:
         template=(
             "You are a recipe verifier. The user requested: {query}. "
             "Here is the retrieved recipe: {recipe}. "
-            "Does this recipe match the user's request? Respond with 'yes' or 'no' and explain why."
+            "Does the recipe name match the user request? Respond with 'yes' or 'no' and explain why."
         )
     )
     chain = LLMChain(llm=llm, prompt=prompt)
@@ -77,7 +77,7 @@ def verify_recipe(recipe: str, query: str) -> str:
 verify_tool = StructuredTool(
     name="Verify Recipe",
     func=verify_recipe,
-    description="Verify if the retrieved recipe matches the user's request.",
+    description="Verify if the retrieved recipe name matches the user's request.",
     args_schema=VerifyRecipeInput  # Specify the input schema
 )
 
@@ -96,11 +96,40 @@ def generate_recipe(query: str) -> str:
 generate_tool = Tool(
     name="Generate Recipe",
     func=generate_recipe,
-    description="Generate a new recipe that matches the user's request."
+    description="Generate a new recipe that matches the user's request. It must contain a name, description, ingredients, and instructions."
 )
 
+# Function to parse recipe text into structured format
+def parse_recipe(recipe_text: str, default_name: str) -> dict:
+    # Split the recipe text into sections
+    lines = recipe_text.split("\n")
+    name = lines[0] if lines else default_name
+    description = lines[1] if len(lines) > 1 else "No description available."
+    
+    # Extract ingredients and instructions
+    try:
+        ingredients_start = lines.index("Ingredients:") + 1
+        instructions_start = lines.index("Instructions:")
+        ingredients = lines[ingredients_start:instructions_start]
+        instructions = lines[instructions_start + 1:]
+    except ValueError:
+        # Fallback if "Ingredients:" or "Instructions:" are not found
+        ingredients = ["No ingredients available."]
+        instructions = ["No instructions available."]
+
+    # Clean and format the ingredients and instructions
+    ingredients = [ingredient.strip().replace("[", "").replace("]", "").replace("'", "") for ingredient in ingredients]
+    instructions = " ".join([instruction.strip() for instruction in instructions])
+
+    return {
+        "name": name,
+        "description": description,
+        "ingredients": ingredients,
+        "steps": instructions
+    }
+
 # Router Prompt: Combine the tools
-def router_prompt(query: str):
+def router_prompt(query: str) -> dict:
     # Step 1: Search for a recipe
     retrieved_recipe = search_tool.run(query)
 
@@ -108,29 +137,25 @@ def router_prompt(query: str):
     verification_result = verify_tool.run({"recipe": retrieved_recipe.page_content, "query": query})
 
     if "yes" in verification_result.lower():
-        return f"Recipe matches the request:\n\n{retrieved_recipe.page_content}"
+       
+        recipe_id = int(retrieved_recipe.page_content.split()[0].strip())
+        return recipes[recipes["id"] == recipe_id].iloc[0] 
     else:
         # Step 3: Generate a new recipe
         new_recipe = generate_tool.run(query)
-        return f"No matching recipe found. Generated a new recipe:\n\n{new_recipe}"
-    
+        # Parse the generated recipe into a structured format
+        return parse_recipe(new_recipe, default_name="Generated Recipe")
+
 # Streamlit Dashboard
 st.title("Recipe Recommender")
-st.write("What are you in the mood for?")
 
 # Input query from the user
-query = st.text_input("Enter your query:", placeholder="e.g., A quick and easy high-protein dinner")
+query = st.text_input("What are you in the mood for?", placeholder="e.g., A quick and easy high-protein dinner")
 
 # Display results when the user submits a query
 if query:
     st.write(f"Top recipe for query: '{query}'")
     top_recipe = router_prompt(query)
-
-    # Clean and format the ingredients list
-    ingredients_list = [
-        ingredient.strip().replace("[", "").replace("]", "").replace("'", "")
-        for ingredient in top_recipe['ingredients'].split(",")
-    ]
 
     # Style the recipe like a cooking recipe
     st.markdown(f"""
@@ -140,9 +165,9 @@ if query:
         <hr style="border: 1px solid #ddd;">
         <p><strong>Ingredients:</strong></p>
         <ul>
-            {"".join([f"<li>{ingredient}</li>" for ingredient in ingredients_list])}
+            {"".join([f"<li>{ingredient}</li>" for ingredient in top_recipe['ingredients']])}
         </ul>
         <p><strong>Instructions:</strong></p>
-        <p>{top_recipe['description']}</p>
+        <p>{top_recipe['steps']}</p>
     </div>
     """, unsafe_allow_html=True)
