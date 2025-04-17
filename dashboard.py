@@ -5,9 +5,28 @@ from langchain_community.document_loaders import TextLoader # Importing a custom
 from langchain_text_splitters import CharacterTextSplitter #Splitting the text into smaller chunks
 from langchain_openai import OpenAIEmbeddings # Importing OpenAI embeddings for vectorization
 from langchain_chroma import Chroma #Vector database for storing the embeddings
+from langchain.chains import LLMChain
+from langchain.prompts import PromptTemplate
+from langchain.tools import Tool, StructuredTool
+from langchain.schema import Document
+from pydantic import BaseModel
+from langchain.chat_models import ChatOpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Configure the Phoenix tracer
+tracer_provider = register(
+    project_name="recipe_recommender",
+    auto_instrument=True
+)
+tracer = tracer_provider.get_tracer(__name__)
+
+# Import the automatic instrumentor from OpenInference
+from openinference.instrumentation.openai import OpenAIInstrumentor
+
+# Finish automatic instrumentation
+OpenAIInstrumentor().instrument(tracer_provider=tracer_provider)
 
 recipes = pd.read_csv("output_data/common_ingredients_recipes.csv")
 
@@ -24,39 +43,88 @@ db_recipes = Chroma.from_documents(
     embedding=OpenAIEmbeddings(),
     persist_directory="output_data")
 
-# Configure the Phoenix tracer
-tracer_provider = register(
-    project_name="recipe_recommender",
-    auto_instrument=True
+# Initialize the OpenAI LLM for chat-based models
+llm = ChatOpenAI(model="gpt-4", temperature=0.7)
+
+# Tool 1: Search for a recipe in the Chroma database
+def search_recipe(query: str) -> Document:
+    top_doc = db_recipes.similarity_search(query, k=1)[0]
+    return top_doc
+
+search_tool = Tool(
+    name="Search Recipe",
+    func=search_recipe,
+    description="Search for a recipe in the Chroma database based on the user's query."
+)
+# Define the input schema for the verify tool
+class VerifyRecipeInput(BaseModel):
+    recipe: str
+    query: str
+
+# Tool 2: Verify if the recipe matches the user's request
+def verify_recipe(recipe: str, query: str) -> str:
+    prompt = PromptTemplate(
+        input_variables=["recipe", "query"],
+        template=(
+            "You are a recipe verifier. The user requested: {query}. "
+            "Here is the retrieved recipe: {recipe}. "
+            "Does this recipe match the user's request? Respond with 'yes' or 'no' and explain why."
+        )
+    )
+    chain = LLMChain(llm=llm, prompt=prompt)
+    return chain.run({"recipe": recipe, "query": query})
+
+verify_tool = StructuredTool(
+    name="Verify Recipe",
+    func=verify_recipe,
+    description="Verify if the retrieved recipe matches the user's request.",
+    args_schema=VerifyRecipeInput  # Specify the input schema
 )
 
-tracer = tracer_provider.get_tracer(__name__)
+# Tool 3: Generate a new recipe if no match is found
+def generate_recipe(query: str) -> str:
+    prompt = PromptTemplate(
+        input_variables=["query"],
+        template=(
+            "The user requested: {query}. Generate a recipe that matches this request. "
+            "Include a name, description, ingredients, and instructions."
+        )
+    )
+    chain = LLMChain(llm=llm, prompt=prompt)
+    return chain.run({"query": query})
 
-# Function to retrieve the top 5 recipes based on a query
-@tracer.chain
-def retrieve_top_5_recipes(query: str) -> pd.DataFrame:
-    top_docs = db_recipes.similarity_search(query, k=5)
-    recipe_ids = [int(doc.page_content.split()[0].strip()) for doc in top_docs]
-    return recipes[recipes["id"].isin(recipe_ids)]
+generate_tool = Tool(
+    name="Generate Recipe",
+    func=generate_recipe,
+    description="Generate a new recipe that matches the user's request."
+)
 
-# Function to retrieve the top recipe based on a query
-@tracer.chain
-def retrieve_top_recipe(query: str) -> pd.Series:
-    top_doc = db_recipes.similarity_search(query, k=1)[0]  # Retrieve only the top document
-    recipe_id = int(top_doc.page_content.split()[0].strip())
-    return recipes[recipes["id"] == recipe_id].iloc[0]  # Return the top recipe as a Series
+# Router Prompt: Combine the tools
+def router_prompt(query: str):
+    # Step 1: Search for a recipe
+    retrieved_recipe = search_tool.run(query)
 
+    # Step 2: Verify the recipe
+    verification_result = verify_tool.run({"recipe": retrieved_recipe.page_content, "query": query})
+
+    if "yes" in verification_result.lower():
+        return f"Recipe matches the request:\n\n{retrieved_recipe.page_content}"
+    else:
+        # Step 3: Generate a new recipe
+        new_recipe = generate_tool.run(query)
+        return f"No matching recipe found. Generated a new recipe:\n\n{new_recipe}"
+    
 # Streamlit Dashboard
-st.title("Recipe Recommender Dashboard")
-st.write("Enter a query to retrieve the top recipe based on semantic similarity.")
+st.title("Recipe Recommender")
+st.write("What are you in the mood for?")
 
 # Input query from the user
-query = st.text_input("Enter your query:", placeholder="e.g., A quick and easy dinner")
+query = st.text_input("Enter your query:", placeholder="e.g., A quick and easy high-protein dinner")
 
 # Display results when the user submits a query
 if query:
     st.write(f"Top recipe for query: '{query}'")
-    top_recipe = retrieve_top_recipe(query)
+    top_recipe = router_prompt(query)
 
     # Clean and format the ingredients list
     ingredients_list = [
