@@ -47,6 +47,7 @@ db_recipes = Chroma.from_documents(
 llm = ChatOpenAI(model="gpt-4", temperature=0.7)
 
 # Tool 1: Search for a recipe in the Chroma database
+@tracer.chain(name="search_recipe")
 def search_recipe(query: str) -> Document:
     top_doc = db_recipes.similarity_search(query, k=1)[0]
     return top_doc
@@ -62,6 +63,7 @@ class VerifyRecipeInput(BaseModel):
     query: str
 
 # Tool 2: Verify if the recipe matches the user's request
+@tracer.chain(name="verify_recipe")
 def verify_recipe(recipe: str, query: str) -> str:
     prompt = PromptTemplate(
         input_variables=["recipe", "query"],
@@ -82,6 +84,7 @@ verify_tool = StructuredTool(
 )
 
 # Tool 3: Generate a new recipe if no match is found
+@tracer.chain(name="generate_recipe")
 def generate_recipe(query: str) -> str:
     prompt = PromptTemplate(
         input_variables=["query"],
@@ -100,6 +103,7 @@ generate_tool = Tool(
 )
 
 # Function to parse recipe text into structured format
+@tracer.chain(name="parse_recipe")
 def parse_recipe(recipe_text: str, default_name: str) -> dict:
     # Split the recipe text into sections
     lines = recipe_text.split("\n")
@@ -129,6 +133,7 @@ def parse_recipe(recipe_text: str, default_name: str) -> dict:
     }
 
 # Router Prompt: Combine the tools
+@tracer.chain(name="router_prompt")
 def router_prompt(query: str) -> dict:
     # Step 1: Search for a recipe
     retrieved_recipe = search_tool.run(query)
