@@ -1,6 +1,6 @@
 import streamlit as st # [To Start] streamlit run dashboard.py
 import pandas as pd
-from phoenix.otel import register
+
 from langchain_community.document_loaders import TextLoader # Importing a custom text loader for the recipe description
 from langchain_text_splitters import CharacterTextSplitter #Splitting the text into smaller chunks
 from langchain_openai import OpenAIEmbeddings # Importing OpenAI embeddings for vectorization
@@ -9,10 +9,21 @@ from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
 from langchain.tools import Tool, StructuredTool
 from langchain.schema import Document
-from pydantic import BaseModel
-from langchain.chat_models import ChatOpenAI
-from dotenv import load_dotenv
 
+from langchain.chat_models import ChatOpenAI
+import phoenix as px
+from phoenix.trace import SpanEvaluations
+from phoenix.trace.dsl import SpanQuery
+from phoenix.otel import register
+from phoenix.evals import (
+    RAG_RELEVANCY_PROMPT_RAILS_MAP,
+    RAG_RELEVANCY_PROMPT_TEMPLATE,
+    OpenAIModel,
+    download_benchmark_dataset,
+    llm_classify,
+)
+
+from dotenv import load_dotenv
 load_dotenv()
 
 # Configure the Phoenix tracer
@@ -21,14 +32,6 @@ tracer_provider = register(
     auto_instrument=True
 )
 tracer = tracer_provider.get_tracer(__name__)
-
-# Import the automatic instrumentor from OpenInference
-from openinference.instrumentation.openai import OpenAIInstrumentor
-
-# Finish automatic instrumentation
-OpenAIInstrumentor().instrument(tracer_provider=tracer_provider)
-
-recipes = pd.read_csv("output_data/common_ingredients_recipes.csv")
 
 #Instantiate the text splitter
 raw_documents = TextLoader("output_data/recipe_description.txt").load()
@@ -43,7 +46,7 @@ db_recipes = Chroma.from_documents(
     embedding=OpenAIEmbeddings(),
     persist_directory="output_data")
 
-# Initialize the OpenAI LLM for chat-based models
+# Initialize the OpenAI LLM 
 llm = ChatOpenAI(model="gpt-4", temperature=0.7)
 
 # Tool 1: Search for a recipe in the Chroma database
@@ -56,31 +59,6 @@ search_tool = Tool(
     name="Search Recipe",
     func=search_recipe,
     description="Search for a recipe in the Chroma database based on the user's query."
-)
-# Define the input schema for the verify tool
-class VerifyRecipeInput(BaseModel):
-    recipe: str
-    query: str
-
-# Tool 2: Verify if the recipe matches the user's request
-@tracer.chain(name="verify_recipe")
-def verify_recipe(recipe: str, query: str) -> str:
-    prompt = PromptTemplate(
-        input_variables=["recipe", "query"],
-        template=(
-            "You are a recipe verifier. The user requested: {query}. "
-            "Here is the retrieved recipe: {recipe}. "
-            "Does the recipe name match the user request? Respond with 'yes' or 'no' and explain why."
-        )
-    )
-    chain = LLMChain(llm=llm, prompt=prompt)
-    return chain.run({"recipe": recipe, "query": query})
-
-verify_tool = StructuredTool(
-    name="Verify Recipe",
-    func=verify_recipe,
-    description="Verify if the retrieved recipe name matches the user's request.",
-    args_schema=VerifyRecipeInput  # Specify the input schema
 )
 
 # Tool 3: Generate a new recipe if no match is found
@@ -132,47 +110,71 @@ def parse_recipe(recipe_text: str, default_name: str) -> dict:
         "steps": instructions
     }
 
-# Router Prompt: Combine the tools
+# Function to evaluate the relevance of the final recipe
+@tracer.chain(name="llm_eval_qa_answer")
+def llm_eval_qa_answer(query: str, recipe) -> str:
+    # Define the classification prompt
+    classification_prompt = ("""You are given a query and a recipe. You must determine whether the
+        given recipe is relevant to the query. Here is the data:
+            [BEGIN DATA]
+            ************
+            [Query]: {query}
+            ************
+            [Recipe]: 
+            Name: {recipe_name}
+            Description: {recipe_description}
+            Ingredients: {recipe_ingredients}
+            [END DATA]
+        Your response must be a single word, either "correct" or "incorrect",
+        and should not contain any text or characters aside from that word.
+        "correct" means that the question is correctly and fully answered by the answer.
+        "incorrect" means that the question is not correctly or only partially answered by the
+        answer."""
+    )
+
+    # Combine recipe details into a single response string
+    #response = recipe["name"] + " " + recipe["description"] + " ".join(recipe["ingredients"]) + " " + recipe["steps"]
+
+
+    # Use llm_classify to evaluate relevance
+    evaluation_result = llm_classify(
+        data=pd.DataFrame([{"query": query, "recipe_name": recipe["name"], "recipe_description": recipe["description"], "recipe_ingredients": recipe["ingredients"]}]),
+        template=classification_prompt,
+        rails=["correct", "incorrect"],
+        provide_explanation=True,
+        concurrency=1,
+        model=OpenAIModel(model="gpt-4.1")
+    )
+
+    # Log the evaluation result in Phoenix
+    #px.Client().log_evaluations(SpanEvaluations(eval_name="QA_Answer", dataframe=evaluation_result))
+
+    return evaluation_result
+
+# Router prompt function
 @tracer.chain(name="router_prompt")
 def router_prompt(query: str) -> dict:
     # Step 1: Search for a recipe
     retrieved_recipe = search_tool.run(query)
 
-    # Step 2: Verify the recipe
-    verification_result = verify_tool.run({"recipe": retrieved_recipe.page_content, "query": query})
+    # Load the recipe list to get the recipe details fro the ID
+    recipes = pd.read_csv("output_data/common_ingredients_recipes.csv")
+    
+    #Extract the ID fronm the retrieved recipe description
+    recipe_id = int(retrieved_recipe.page_content.split()[0].strip())
 
-    if "yes" in verification_result.lower():
-       
-        recipe_id = int(retrieved_recipe.page_content.split()[0].strip())
-        return recipes[recipes["id"] == recipe_id].iloc[0] 
+    # Get the recipe details from the ID
+    top_recipe = recipes[recipes["id"] == recipe_id].iloc[0] 
+
+    # Step 2: Verify the recipe
+    verification_result = llm_eval_qa_answer(query, top_recipe)
+    if verification_result["label"][0] == "correct":
+        # Return the recipe if it is relevant
+        final_recipe = top_recipe
     else:
         # Step 3: Generate a new recipe
         new_recipe = generate_tool.run(query)
-        # Parse the generated recipe into a structured format
-        return parse_recipe(new_recipe, default_name="Generated Recipe")
-
-# Streamlit Dashboard
-st.title("Recipe Recommender")
-
-# Input query from the user
-query = st.text_input("What are you in the mood for?", placeholder="e.g., A quick and easy high-protein dinner")
-
-# Display results when the user submits a query
-if query:
-    st.write(f"Top recipe for query: '{query}'")
-    top_recipe = router_prompt(query)
-
-    # Style the recipe like a cooking recipe
-    st.markdown(f"""
-    <div style="background-color: black; padding: 20px; border-radius: 10px; border: 1px solid #ddd;">
-        <h2 style="color: #4CAF50; text-align: center;">{top_recipe['name']}</h2>
-        <p><strong>Description:</strong> {top_recipe['description']}</p>
-        <hr style="border: 1px solid #ddd;">
-        <p><strong>Ingredients:</strong></p>
-        <ul>
-            {"".join([f"<li>{ingredient}</li>" for ingredient in top_recipe['ingredients']])}
-        </ul>
-        <p><strong>Instructions:</strong></p>
-        <p>{top_recipe['steps']}</p>
-    </div>
-    """, unsafe_allow_html=True)
+        final_recipe = parse_recipe(new_recipe, "Generated Recipe")
+    
+    
+    return final_recipe

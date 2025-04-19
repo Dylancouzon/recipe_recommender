@@ -18,3 +18,4 @@ The Recipe Recommender is an intelligent, semantic-based recipe recommendation s
 - **Pandas**: For data manipulation and analysis.
 - **Jupyter Notebooks**: For data exploration and prototyping.
 - **Arize Phoenix**: Used for monitoring and troubleshooting machine learning models.
+- **Streamlit**: Used for UX interface
