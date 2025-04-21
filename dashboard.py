@@ -2,25 +2,21 @@ import streamlit as st # [To Start] streamlit run dashboard.py
 import pandas as pd
 import json
 
-from langchain_community.document_loaders import TextLoader # Importing a custom text loader for the recipe description
-from langchain_text_splitters import CharacterTextSplitter #Splitting the text into smaller chunks
-from langchain_openai import OpenAIEmbeddings # Importing OpenAI embeddings for vectorization
-from langchain_chroma import Chroma #Vector database for storing the embeddings
-from langchain.chains import LLMChain
-from langchain.prompts import PromptTemplate
+from langchain_community.document_loaders import TextLoader 
+from langchain_text_splitters import CharacterTextSplitter 
+from langchain_openai import OpenAIEmbeddings 
+from langchain_chroma import Chroma
 from langchain.tools import Tool
 from langchain.schema import Document
-from langchain.chat_models import ChatOpenAI
+from langchain_openai import ChatOpenAI
 
 import phoenix as px
 from phoenix.trace import SpanEvaluations
 from phoenix.otel import register
 from phoenix.evals import OpenAIModel, llm_classify
 
-#from openinference.instrumentation.openai import OpenAIInstrumentor
-#from openinference.instrumentation.langchain import LangChainInstrumentor
+from openinference.instrumentation.langchain import LangChainInstrumentor
 from opentelemetry.trace import format_span_id
-
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -32,21 +28,18 @@ tracer_provider = register(
 )
 tracer = tracer_provider.get_tracer(__name__)
 
-#OpenAIInstrumentor().instrument(tracer_provider=tracer_provider)
-#LangChainInstrumentor().instrument(tracer_provider=tracer_provider)
+LangChainInstrumentor().instrument(tracer_provider=tracer_provider)
 
-#Instantiate the text splitter
+# Load the recipe descriptions
 raw_documents = TextLoader("output_data/recipe_description.txt").load()
-text_splitter = CharacterTextSplitter(chunk_overlap=0, separator="\n")
+text_splitter = CharacterTextSplitter(chunk_overlap=0, separator="\n") #Each line is a separate recipe
 documents = text_splitter.split_documents(raw_documents)
 
-#Creating the document embeddings and storing them in a vector database
+# Indexing the chunks
 db_recipes = Chroma.from_documents(
     documents,
     embedding=OpenAIEmbeddings())
 
-# Initialize the OpenAI LLM 
-llm = ChatOpenAI(model="gpt-4", temperature=0.7)
 
 # Tool 1: Search for a recipe in the Chroma database
 def search_recipe(query: str) -> Document:
@@ -70,17 +63,18 @@ search_tool = Tool(
 
 # Tool 2: Generate a new recipe if no match is found
 def generate_recipe(query: str) -> dict:
-    prompt = PromptTemplate(
-        input_variables=["query"],
-        template=(
-            "The user requested: {query}. Generate a recipe that matches this request. "
-            "Return the recipe as a JSON object with the following fields: "
-            "'name', 'description', 'ingredients' (as a list of strings), and 'instructions' (as a list of strings)."
-        )
-    )
-    chain = LLMChain(llm=llm, prompt=prompt)
-    result = chain.run({"query": query})
-    return json.loads(result)
+    prompt = [
+    (
+        "system",
+        "Generate a recipe that matches the user request. "
+        "Return the recipe as a JSON object with the following fields: "
+        "'name', 'description', 'ingredients' (as a list of strings), and 'instructions' (as a list of strings)."
+    ),
+    (query),
+    ]
+    llm = ChatOpenAI(model="gpt-4",temperature=0.7)
+    result = llm.invoke(prompt)
+    return json.loads(result.content)
 
 generate_tool = Tool(
     name="Generate Recipe",
@@ -188,7 +182,6 @@ def router_prompt(query: str) -> dict:
     else:
         new_recipe = generate_tool.run(query)
         final_recipe = parse_recipe(new_recipe, "Generated Recipe")
-    
     
     return final_recipe
 
