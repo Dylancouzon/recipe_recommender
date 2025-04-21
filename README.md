@@ -17,8 +17,6 @@ The goal of this project was to challenge myself by building a **Retrieval-Augme
 
 ---
 
-This version is more structured and easier to understand while retaining all the key points. Let me know if you need further adjustments!
-
 ## Technologies Used
 
 - **OpenAI**: Natural language understanding, semantic processing, and recipe generation.
