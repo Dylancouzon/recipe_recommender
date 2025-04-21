@@ -3,7 +3,7 @@ from phoenix.otel import register
 from openinference.instrumentation.langchain import LangChainInstrumentor
 
 tracer_provider = register(
-    project_name="recipe_recommender",
+    project_name="recipe_recommender2",
     auto_instrument=True
 )
 tracer = tracer_provider.get_tracer(__name__)

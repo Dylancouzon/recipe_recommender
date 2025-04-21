@@ -10,4 +10,3 @@ langchain_openai
 langchain_community
 langchain_chroma
 openinference-instrumentation-langchain
-openinference-instrumentation-openai
