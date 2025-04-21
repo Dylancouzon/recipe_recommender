@@ -41,7 +41,6 @@ query = st.text_input("What are you in the mood for?", placeholder="e.g., A quic
 
 # Display results when the user submits a query
 if query:
-    st.write(f"Top recipe for query: '{query}'")
     top_recipe = start_agent(query)
 
     # Style the recipe like a cooking recipe
