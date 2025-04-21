@@ -8,21 +8,19 @@ from langchain_openai import OpenAIEmbeddings # Importing OpenAI embeddings for 
 from langchain_chroma import Chroma #Vector database for storing the embeddings
 from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
-from langchain.tools import Tool, StructuredTool
+from langchain.tools import Tool
 from langchain.schema import Document
-
 from langchain.chat_models import ChatOpenAI
+
 import phoenix as px
 from phoenix.trace import SpanEvaluations
-from phoenix.trace.dsl import SpanQuery
 from phoenix.otel import register
-from phoenix.evals import (
-    RAG_RELEVANCY_PROMPT_RAILS_MAP,
-    RAG_RELEVANCY_PROMPT_TEMPLATE,
-    OpenAIModel,
-    download_benchmark_dataset,
-    llm_classify,
-)
+from phoenix.evals import OpenAIModel, llm_classify
+
+#from openinference.instrumentation.openai import OpenAIInstrumentor
+#from openinference.instrumentation.langchain import LangChainInstrumentor
+from opentelemetry.trace import format_span_id
+
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -34,27 +32,35 @@ tracer_provider = register(
 )
 tracer = tracer_provider.get_tracer(__name__)
 
+#OpenAIInstrumentor().instrument(tracer_provider=tracer_provider)
+#LangChainInstrumentor().instrument(tracer_provider=tracer_provider)
+
 #Instantiate the text splitter
 raw_documents = TextLoader("output_data/recipe_description.txt").load()
 text_splitter = CharacterTextSplitter(chunk_overlap=0, separator="\n")
 documents = text_splitter.split_documents(raw_documents)
 
-
 #Creating the document embeddings and storing them in a vector database
-# Added persist_directory to store the embeddings
 db_recipes = Chroma.from_documents(
     documents,
-    embedding=OpenAIEmbeddings(),
-    persist_directory="output_data")
+    embedding=OpenAIEmbeddings())
 
 # Initialize the OpenAI LLM 
 llm = ChatOpenAI(model="gpt-4", temperature=0.7)
 
 # Tool 1: Search for a recipe in the Chroma database
-@tracer.chain(name="search_recipe")
 def search_recipe(query: str) -> Document:
+    # Perform a similarity search in the Chroma database
     top_doc = db_recipes.similarity_search(query, k=1)[0]
-    return top_doc
+
+    # Extract the recipe ID
+    recipe_id = int(top_doc.page_content.split()[0].strip())
+
+    # Retrieve & return the recipe details
+    recipes = pd.read_csv("output_data/common_ingredients_recipes.csv")
+    top_recipe = recipes[recipes["id"] == recipe_id].iloc[0] 
+
+    return top_recipe
 
 search_tool = Tool(
     name="Search Recipe",
@@ -62,8 +68,7 @@ search_tool = Tool(
     description="Search for a recipe in the Chroma database based on the user's query."
 )
 
-# Tool 3: Generate a new recipe if no match is found
-@tracer.chain(name="generate_recipe")
+# Tool 2: Generate a new recipe if no match is found
 def generate_recipe(query: str) -> dict:
     prompt = PromptTemplate(
         input_variables=["query"],
@@ -106,8 +111,7 @@ def parse_recipe(recipe_json: dict, default_name: str) -> dict:
     }
 
 # Function to evaluate the relevance of the final recipe
-@tracer.chain(name="llm_eval_qa_answer")
-def llm_eval_qa_answer(query: str, recipe) -> str:
+def llm_eval_relevance(query: str, recipe) -> str:
     # Define the classification prompt
     classification_prompt = ("""You are given a query and a recipe. You must determine whether the
         given recipe is relevant to the query. Here is the data:
@@ -120,50 +124,68 @@ def llm_eval_qa_answer(query: str, recipe) -> str:
             Description: {recipe_description}
             Ingredients: {recipe_ingredients}
             [END DATA]
-        Your response must be a single word, either "correct" or "incorrect",
+        Your response must be a single word, either "relevant" or "irrelevant",
         and should not contain any text or characters aside from that word.
         "correct" means that the question is correctly and fully answered by the answer.
         "incorrect" means that the question is not correctly or only partially answered by the
         answer."""
     )
-
+    
     # Use llm_classify to evaluate relevance
     evaluation_result = llm_classify(
         data=pd.DataFrame([{"query": query, "recipe_name": recipe["name"], "recipe_description": recipe["description"], "recipe_ingredients": recipe["ingredients"]}]),
         template=classification_prompt,
-        rails=["correct", "incorrect"],
+        rails=["relevant", "irrelevant"],
         provide_explanation=True,
-        concurrency=1,
         model=OpenAIModel(model="gpt-4.1")
     )
 
-    # Log the evaluation result in Phoenix
-    #px.Client().log_evaluations(SpanEvaluations(eval_name="QA_Answer", dataframe=evaluation_result))
-
     return evaluation_result
 
+def recipe_relevance_evaluator(retrieved_recipe: Document) -> str:
+
+    # Evaluation span for Recipe relevance
+    with tracer.start_as_current_span(
+        "Recipe-evaluator",
+        openinference_span_kind="evaluator",
+    ) as eval_span:
+        evaluation_result = llm_eval_relevance(query, retrieved_recipe)
+        eval_span.set_attribute("eval.label", evaluation_result["label"][0])
+        eval_span.set_attribute("eval.explanation", evaluation_result["explanation"][0])
+
+    # Logging our evaluation
+    span_id = format_span_id(eval_span.get_span_context().span_id)
+    score = 1 if evaluation_result["label"][0] == "relevant" else 0
+    eval_data = {
+        "span_id": span_id,
+        "label": evaluation_result["label"][0],
+        "score": score,
+        "explanation": evaluation_result["explanation"][0],
+    }
+    df = pd.DataFrame([eval_data])
+    px.Client().log_evaluations(
+        SpanEvaluations(
+            dataframe=df,
+            eval_name="Dataset relevance",
+        ),
+    )
+    
+    return evaluation_result["label"][0]
+
 # Router prompt function
-@tracer.chain(name="router_prompt")
+@tracer.agent(name="agent")
 def router_prompt(query: str) -> dict:
+
     # Step 1: Search for a recipe
     retrieved_recipe = search_tool.run(query)
 
-    # Load the recipe list to get the recipe details fro the ID
-    recipes = pd.read_csv("output_data/common_ingredients_recipes.csv")
-    
-    #Extract the ID fronm the retrieved recipe description
-    recipe_id = int(retrieved_recipe.page_content.split()[0].strip())
+    # Step 2: Verify the relevance of the recipe based on the query
+    evaluation_result = recipe_relevance_evaluator(retrieved_recipe)
 
-    # Get the recipe details from the ID
-    top_recipe = recipes[recipes["id"] == recipe_id].iloc[0] 
-
-    # Step 2: Verify the recipe
-    verification_result = llm_eval_qa_answer(query, top_recipe)
-    if verification_result["label"][0] == "correct":
-        # Return the recipe if it is relevant
-        final_recipe = top_recipe
+    # If the recipe is relevant, return it or else, generate a new one with ChatGPT
+    if evaluation_result == "relevant":
+        final_recipe = retrieved_recipe
     else:
-        # Step 3: Generate a new recipe
         new_recipe = generate_tool.run(query)
         final_recipe = parse_recipe(new_recipe, "Generated Recipe")
     
