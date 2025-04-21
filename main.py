@@ -1,4 +1,4 @@
-import streamlit as st # [To Start] streamlit run dashboard.py
+import streamlit as st # [To Start] streamlit run main.py
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -9,22 +9,23 @@ from evaluators import recipe_relevance_evaluator
 
 
 
-# Router prompt function
+# Starting the agent
 @tracer.agent(name="agent")
 def start_agent(query: str) -> dict:
 
-    # Step 1: Search for a recipe
+    # Step 1: Search for a recipe within the Chroma database
     retrieved_recipe = search_tool.run(query)
 
-    # Step 2: Verify the relevance of the recipe based on the query
+    # Step 2: Evaluate the relevance of the retrieved recipe
     evaluation_result = recipe_relevance_evaluator(retrieved_recipe, query)
 
-    # If the recipe is relevant, return it or else, generate a new one with ChatGPT
+    # If the recipe is relevant to the query, return it or else, generate a new one with ChatGPT
     if evaluation_result == "relevant":
         final_recipe = retrieved_recipe
+        final_recipe['ingredients'] = eval(final_recipe['ingredients'])
+        final_recipe['steps'] = eval(final_recipe['steps'])
     else:
-        new_recipe = generate_tool.run(query)
-        final_recipe = new_recipe
+        final_recipe = generate_tool.run(query)
     
     return final_recipe
 
@@ -48,11 +49,11 @@ if query:
         <hr style="border: 1px solid #ddd;">
         <p><strong>Ingredients:</strong></p>
         <ul>
-            {"".join([f"<li>{ingredient}</li>" for ingredient in eval(top_recipe['ingredients'])])}
+            {"".join([f"<li>{ingredient}</li>" for ingredient in top_recipe['ingredients']])}
         </ul>
         <p><strong>Instructions:</strong></p>
         <ol>
-            {"".join([f"<li>{steps}</li>" for steps in eval(top_recipe['steps'])])}
+            {"".join([f"<li>{steps}</li>" for steps in top_recipe['steps']])}
         </ol>
     </div>
     """, unsafe_allow_html=True)

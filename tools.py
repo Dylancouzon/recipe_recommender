@@ -1,5 +1,6 @@
 
 import json
+import pandas as pd
 
 from langchain_community.document_loaders import TextLoader 
 from langchain_text_splitters import CharacterTextSplitter 
@@ -7,26 +8,30 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_chroma import Chroma
 from langchain.tools import Tool
 from langchain_openai import ChatOpenAI
-import pandas as pd
-
 from langchain.schema import Document
 
-# Tool 1: Search for a recipe in the Chroma database
-def search_recipe(query: str) -> Document:
+from phoenix.trace import suppress_tracing
+
+# Supress tracking for the chunking process
+with suppress_tracing():
     # Load the recipe descriptions
     raw_documents = TextLoader("output_data/recipe_description.txt").load()
-    text_splitter = CharacterTextSplitter(chunk_overlap=0, separator="\n") #Each line is a separate recipe
+    text_splitter = CharacterTextSplitter(separator = "\n", chunk_size=1, chunk_overlap=0) # 1 recipe per line
     documents = text_splitter.split_documents(raw_documents)
 
     # Indexing the chunks
     db_recipes = Chroma.from_documents(
     documents,
-    embedding=OpenAIEmbeddings())
-    # Perform a similarity search in the Chroma database
-    top_doc = db_recipes.similarity_search(query, k=1)[0]
+    embedding=OpenAIEmbeddings(),
+    persist_directory="output_data/chroma_db")
+
+
+# Tool 1: Search for a recipe in the Chroma database
+def search_recipe(query: str) -> Document:
+    most_relevant_recipe = db_recipes.similarity_search(query, k=1)[0]
 
     # Extract the recipe ID
-    recipe_id = int(top_doc.page_content.split()[0].strip())
+    recipe_id = int(most_relevant_recipe.page_content.split()[0].strip())
 
     # Retrieve & return the recipe details
     recipes = pd.read_csv("output_data/common_ingredients_recipes.csv")
@@ -39,7 +44,6 @@ search_tool = Tool(
     func=search_recipe,
     description="Search for a recipe in the Chroma database based on the user's query."
 )
-
 
 # Tool 2: Generate a new recipe if no match is found
 def generate_recipe(query: str) -> dict:
