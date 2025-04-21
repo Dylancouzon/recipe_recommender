@@ -3,23 +3,26 @@
 The **Recipe Recommender** is a smart, semantic-based system built with Python, OpenAI, and LangChain. It provides personalized recipe recommendations based on user queries, combining retrieval and generation techniques.
 
 ![alt text](imgs/1.png "UI")
+
 ---
 
 ## Goal
 
-The primary goal of this project was to challenge myself by building a **RAG agent** entirely from scratch. This involved:
+The goal of this project was to challenge myself by building a **Retrieval-Augmented Generation (RAG) agent** from scratch. This involved:
 
-1. **Curating a Custom Dataset**: Created a tailored dataset for specific use cases.
-3. **Evaluating the results relevance**: Helped me improved the quality of the dataset & understand the chuking process better 
-2. **Using LangChain**: To understand Complex workflows better 
-3. **Creating tools**: Used generative content to complement 
+1. **Creating a Custom Dataset**: Designed and curated a dataset tailored to recipe recommendations for specific use cases.
+2. **Exploring LangChain**: Leveraged & tested LangChain's tools to help me understand complex workflows better
+3. **Combining Retrieval and Generation**: Built an agent that integrates semantic search with dynamic recipe generation for personalized results.
+4. **Improving Data and Prompts**: Focused on refining the dataset and optimizing prompts to ensure high-quality, relevant recommendations.
 
 ---
+
+This version is more structured and easier to understand while retaining all the key points. Let me know if you need further adjustments!
 
 ## Technologies Used
 
 - **OpenAI**: Natural language understanding, semantic processing, and recipe generation.
-- **LangChain**: Framework powering the RAG agent.
+- **LangChain**: Framework powering the Agent workflow
 - **Chroma**: Vector database for semantic search.
 - **Pandas**: Data manipulation and analysis.
 - **Streamlit**: User Interface Framework.
