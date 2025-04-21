@@ -6,10 +6,11 @@ load_dotenv()
 from instruments import tracer
 from tools import search_tool, generate_tool
 from evaluators import recipe_relevance_evaluator
+from utils import display_final_recipe
 
 
-
-# Starting the agent
+# Starting the agent, I kept it very simple
+# I experimented with chains & Langgraph but it was overkill for this use case
 @tracer.agent(name="agent")
 def start_agent(query: str) -> dict:
 
@@ -27,6 +28,8 @@ def start_agent(query: str) -> dict:
     else:
         final_recipe = generate_tool.run(query)
     
+    # Logging the final recipe in the Phoenix Dashboard
+    display_final_recipe(final_recipe)
     return final_recipe
 
 
