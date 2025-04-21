@@ -1,0 +1,13 @@
+kagglehub
+pandas
+matplotlib
+openai
+arize-phoenix
+dotenv
+streamlit
+langchain
+langchain_openai
+langchain_community
+langchain_chroma
+openinference-instrumentation-langchain
+openinference-instrumentation-openai
